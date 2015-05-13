@@ -153,8 +153,9 @@ let private onMessage e =
 
 let rec private checkInput () = 
     let line = Console.ReadLine()
-    readMessage line |> onMessage
-    checkInput()
+    if line <> null then 
+        readMessage line |> onMessage
+        checkInput()
 
 let startListening () =
     while true do checkInput ()

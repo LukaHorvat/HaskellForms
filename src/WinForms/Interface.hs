@@ -158,8 +158,8 @@ host = unsafePerformIO $ do
     ch1 <- newChan
     return $ Host r1 r2 ch1 r3
 
-startHost :: IO ()
-startHost = do
+startHost :: Bool -> IO ()
+startHost debug = do
     (Just inH, Just outH, _, _) <- createProcess (proc "C:/Users/Luka/Documents/Haskell/HaskellForms/src/Host/HaskellForms/HaskellForms/bin/Debug/HaskellForms.exe" [])
                                    { std_out = CreatePipe
                                    , std_in  = CreatePipe }
@@ -167,18 +167,19 @@ startHost = do
     hSetBuffering outH LineBuffering
     writeIORef (toHostHandle host) inH
     writeIORef (fromHostHandle host) outH
-    void $ forkIO listen
+    void $ forkIO $ listen debug
 
-listen :: IO ()
-listen = do
+listen :: Bool -> IO ()
+listen debug = do
     fromHost <- readIORef (fromHostHandle host)
     forever $ do
         Right inc <- readIncomming <$> hGetLine fromHost
+        when debug $ print inc
         case inc of
             EventMsg (TargetArgs evtId tgt arg)  -> do
                 handlers <- readIORef $ eventHandlers host
                 case Map.lookup evtId handlers of
-                    Just (Handler f) -> f (fromValue tgt) (fromValue arg)
+                    Just (Handler f) -> void $ forkIO $ f (fromValue tgt) (fromValue arg) --Maybe a bad idea? Not sure.
                     Nothing          -> return ()
             Response resp -> writeChan respCh resp
     where respCh  = responseChan host

@@ -13,4 +13,4 @@ main = do
     cols <- get $ controls form
     add btn cols
     evt <- click btn
-    handle evt (\_ args -> putStrLn "test")
+    handle evt (\_ args -> toString args >>= putStrLn)
