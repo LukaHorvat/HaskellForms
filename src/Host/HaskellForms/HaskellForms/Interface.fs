@@ -10,12 +10,22 @@ open System.Threading
 open System.Drawing
 open System.Text.RegularExpressions
 
-type Value = Int of int | String of string | Color of Color | Point of Point | Size of Size | Font of Font
-type Message = New of string | AddChildControl of int * int | Set of int * string * Value | Get of int * string
-type Response = Pass | NoResponse | ControlId of int | Error of string | Value of Value
-type Handler = delegate of Message -> Response
+type Value = Int of int | String of string | Color of Color | Point of Point | Size of Size | Font of Font | ObjectId of int
+type Message = New of string | Set of int * string * Value | Get of int * string | Invoke of int * string * int * (Value list)
+type Response = Pass | NoResponse | Error of string | Value of Value
 
-let (|Unpacked|_|) (v : Value) = FSharpValue.GetUnionFields(v, typeof<Value>) |> snd |> Array.head |> Some
+let (|Unpacked|_|) = function
+    | ObjectId _ -> None
+    | v          -> FSharpValue.GetUnionFields(v, typeof<Value>) |> snd |> Array.head |> Some
+
+let private valueTypes = 
+    FSharpType.GetUnionCases(typeof<Value>) 
+    |> Seq.map (fun case -> case, case.GetFields() |> Array.head) 
+    |> Seq.map (fun (case, prop) -> prop.PropertyType, fun x -> FSharpValue.MakeUnion(case, [| x |])) 
+    |> Seq.toList
+let (|Packed|_|) (o : obj) = List.tryFind (fst >> (=) (o.GetType())) valueTypes |> Option.map (fun (_, cons) -> cons o :?> Value)
+
+let objectId n = ObjectId n |> Value
 
 type Reader(str : string) =
     let mutable words = 
@@ -88,10 +98,17 @@ let rec private read (reader : Reader) (t : Type) : Either<string, obj> =
 
 and private readUnion (reader : Reader) (t : Type) = eith {
     let! caseName = reader.ReadWord()
-    let cases = FSharpType.GetUnionCases(t)
-    let! case = cases |> Seq.tryFind (fun case -> case.Name = caseName) |> Either.ofOption (sprintf "Case name %s not found on type %A" caseName t)
-    let! args = case.GetFields() |> Array.map (fun prop -> read reader prop.PropertyType) |> Either.sequence
-    return FSharpValue.MakeUnion(case, args |> Seq.toArray)
+    if t = typeof<Message> && caseName = "Invoke" then
+        let! objId = reader.ReadInt()
+        let! metName = reader.ReadWord()
+        let! numArgs = reader.ReadInt()
+        let! argList = [1..numArgs] |> List.map (fun _ -> read reader typeof<Value> |> Either.cast) |> Either.sequence
+        return Invoke(objId, metName, numArgs, argList) :> obj
+    else
+        let cases = FSharpType.GetUnionCases(t)
+        let! case = cases |> Seq.tryFind (fun case -> case.Name = caseName) |> Either.ofOption (sprintf "Case name %s not found on type %A" caseName t)
+        let! args = case.GetFields() |> Array.map (fun prop -> read reader prop.PropertyType) |> Either.sequence
+        return FSharpValue.MakeUnion(case, args |> Seq.toArray)
 }
 
 let private readMessage str : Either<string, Message> = read (Reader str) typeof<Message> |> Either.cast
@@ -120,7 +137,9 @@ let private onMessage e =
             match resp with
             | Pass -> h msg
             | x    -> x
-        handlers |> Seq.fold proc Pass
+        let resp = handlers |> Seq.fold proc Pass
+        if resp = Pass then sprintf "No handler provided for the message %A (even though the message for recognized)" msg |> Error
+        else resp
     |> write builder
     builder.ToString() |> Console.WriteLine
 

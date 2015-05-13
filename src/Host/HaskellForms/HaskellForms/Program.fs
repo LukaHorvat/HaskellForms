@@ -10,7 +10,7 @@ open System.Diagnostics
 
 [<EntryPoint>]
 let main argv = 
-    Application.EnableVisualStyles()
+    Manager.runUiThread()
     Manager.initialize()
     Interface.startListening()
     0 // return an integer exit code

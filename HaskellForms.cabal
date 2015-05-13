@@ -57,7 +57,9 @@ executable HaskellForms
   -- other-extensions:
 
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.7 && <4.8
+  build-depends:       base >=4.7 && <4.8,
+                       template-haskell,
+                       process == 1.2.*
 
   -- Directories containing source files.
   hs-source-dirs:      src
