@@ -69,6 +69,12 @@ let getOrSet msg : Response =
             } |> Either.unpack Error (const' NoResponse) )
     | _ -> Pass
 
+let getEvent msg =
+    match msg with
+    | GetEvent(id, evtName) ->
+        Table.getObject id |> Either.bind (Event.named evtName) |> Either.map (Events.registerEvent) |> Either.unpack Error objectId
+    | _ -> Pass
+
 // Automatically loads the methods with the right signature in this module
 let initialize () =
     let toHandler (m : MethodInfo) = m.CreateDelegate(typeof<Func<Message, Response>>) :?> Func<Message, Response>

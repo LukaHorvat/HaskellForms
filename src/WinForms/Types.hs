@@ -17,5 +17,4 @@ deriveSerialize WithoutHeader ''Vec4
 data Property (access :: Access) a = Property (IO a) (a -> IO ())
 data Access = Gettable | GettableSettable deriving (Show, Read, Eq, Ord)
 
---(:=) :: Marshal a => Property a -> a -> IO ()
---(prop) := val =
+data Event a b = Event Int deriving (Show, Read, Eq, Ord)

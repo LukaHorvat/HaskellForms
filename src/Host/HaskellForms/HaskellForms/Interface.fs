@@ -1,18 +1,17 @@
 ﻿module Interface
 
 open System
-open System.Diagnostics
 open System.Collections.Generic
-open System.IO
 open Microsoft.FSharp.Reflection
 open System.Text
-open System.Threading
 open System.Drawing
 open System.Text.RegularExpressions
 
 type Value = Int of int | String of string | Color of Color | Point of Point | Size of Size | Font of Font | ObjectId of int
-type Message = New of string | Set of int * string * Value | Get of int * string | Invoke of int * string * int * (Value list)
+type Message = New of string | Set of int * string * Value | Get of int * string | Invoke of int * string * int * (Value list) | GetEvent of int * string
 type Response = Pass | NoResponse | Error of string | Value of Value
+type EventMsg = TargetArgs of int * Value * Value
+type Outgoing = EventMsg of EventMsg | Response of Response
 
 let (|Unpacked|_|) = function
     | ObjectId _ -> None
@@ -24,6 +23,11 @@ let private valueTypes =
     |> Seq.map (fun (case, prop) -> prop.PropertyType, fun x -> FSharpValue.MakeUnion(case, [| x |])) 
     |> Seq.toList
 let (|Packed|_|) (o : obj) = List.tryFind (fst >> (=) (o.GetType())) valueTypes |> Option.map (fun (_, cons) -> cons o :?> Value)
+
+let pack (o : obj) =
+    match o with
+    | Packed v -> v
+    | o        -> Table.getIdOrRegister o |> ObjectId
 
 let objectId n = ObjectId n |> Value
 
@@ -128,8 +132,13 @@ let rec private write (builder : StringBuilder) x =
 
 let private handlers = List<Message -> Response>()
 let addMessageHandler handler = handlers.Add handler
-let private onMessage e =
+
+let send x =
     let builder = StringBuilder()
+    write builder x
+    builder.ToString() |> Console.WriteLine
+
+let private onMessage e =
     match e with
     | Left err -> Error err
     | Right msg ->
@@ -140,8 +149,7 @@ let private onMessage e =
         let resp = handlers |> Seq.fold proc Pass
         if resp = Pass then sprintf "No handler provided for the message %A (even though the message for recognized)" msg |> Error
         else resp
-    |> write builder
-    builder.ToString() |> Console.WriteLine
+    |> Response |> send
 
 let rec private checkInput () = 
     let line = Console.ReadLine()
@@ -150,3 +158,8 @@ let rec private checkInput () =
 
 let startListening () =
     while true do checkInput ()
+
+let fireEvent evtId evtTgt evtArgs =
+    let tgt = pack evtTgt
+    let args = pack evtArgs
+    TargetArgs(evtId, tgt, args) |> EventMsg |> send

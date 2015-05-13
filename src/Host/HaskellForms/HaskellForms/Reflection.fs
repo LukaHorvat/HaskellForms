@@ -34,3 +34,11 @@ module Method =
             | :? 'a as a -> Some a |> Right
             | _  when typeof<'a> = typeof<obj> && meth.ReturnType = typeof<System.Void> -> Right None
             | _ -> sprintf "The method %s doesn't return a %A" meth.Name typeof<'a> |> Left
+
+type Evt = Evt of EventInfo * obj
+
+module Event =
+    let named name x =
+        let evt = x.GetType().GetEvent(name, BindingFlags.Public ||| BindingFlags.Instance)
+        if evt = null then sprintf "These is no public event %s on objects of type %A" name (x.GetType()) |> Left
+        else Evt(evt, x) |> Right

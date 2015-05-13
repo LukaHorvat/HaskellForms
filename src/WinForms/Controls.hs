@@ -11,16 +11,20 @@ import WinForms.Controls.Base
 get :: Marshal a => Property any a -> IO a
 get (Property getter _) = getter
 
+handle :: (Marshal a, Marshal b) => Event a b -> (a -> b -> IO ()) -> IO ()
+handle = addHandler
+
+makeShared "EventArgs"
 makeShared "ControlCollection"
 makeShared "Type"
 makeInstantiable "Form"
 makeInstantiable "Button"
 
 toString :: Shared a => a -> IO String
-toString a = invokeMarshal a "ToString" []
+toString = invokeMarshal "ToString" []
 
 getType :: Shared a => a -> IO Type
-getType a = invokeMarshal a "GetType" []
+getType = invokeMarshal "GetType" []
 
 class Shared a => ControlC a where
     location :: a -> Property GettableSettable Point
@@ -32,8 +36,11 @@ class Shared a => ControlC a where
     controls :: a -> Property Gettable ControlCollection
     controls = property "Controls"
 
+    click :: a -> IO (Event a EventArgs)
+    click = event "Click"
+
 instance ControlC Form
 instance ControlC Button
 
-add :: ControlC a => ControlCollection -> a -> IO ()
-add col con = invokeVoid col "Add" [toValue con]
+add :: ControlC a => a -> ControlCollection -> IO ()
+add con = invokeVoid "Add" [toValue con]

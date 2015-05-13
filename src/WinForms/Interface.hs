@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, DataKinds, KindSignatures, FlexibleInstances #-}
+{-# LANGUAGE TemplateHaskell, DataKinds, KindSignatures, FlexibleInstances, ExistentialQuantification #-}
 module WinForms.Interface where
 
 import WinForms.Types
@@ -12,6 +12,10 @@ import System.Process
 import Data.IORef
 import Data.List
 import Language.Haskell.TH
+import Control.Concurrent
+import Control.Monad
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 charLit :: ReadP Char
 charLit = readS_to_P readLitChar
@@ -34,15 +38,20 @@ deserializeRead str = do
     split <- splitToTokens str
     return $ fst $ deserialize split
 
-readResponse :: String -> Either String Response
-readResponse = deserializeRead
+readIncomming :: String -> Either String Incomming
+readIncomming = deserializeRead
 
 data Value = Int Int | String String | Color (Vec4 Int)
            | Point (Vec2 Int) | Size (Vec2 Int) | Font String Float | ObjectId Int
            deriving (Eq, Ord, Show, Read)
-data Message = New String | Set Int String Value | Get Int String | Invoke Int String (Int, [Value])
+data Message = New String | Set Int String Value | Get Int String
+             | Invoke Int String (Int, [Value]) | GetEvent Int String
     deriving (Eq, Ord, Show, Read)
 data Response = NoResponse | Error String | Value Value
+    deriving (Eq, Ord, Show, Read)
+data EventMsg = TargetArgs Int Value Value
+    deriving (Eq, Ord, Show, Read)
+data Incomming = EventMsg EventMsg | Response Response
     deriving (Eq, Ord, Show, Read)
 
 instance Serialize (Int, [Value]) where
@@ -58,6 +67,8 @@ instance Serialize (Int, [Value]) where
 deriveSerialize WithHeader ''Value
 deriveSerialize WithHeader ''Message
 deriveSerialize WithHeader ''Response
+deriveSerialize WithHeader ''EventMsg
+deriveSerialize WithHeader ''Incomming
 
 class Serialize a => Marshal a where
     toValue   :: a -> Value
@@ -88,6 +99,8 @@ instance Serialize Share where
     deserialize ("ObjectId" : ss) = (Share i, rest)
         where (i, rest) = deserialize ss
     deserialize x        = error $ "Cannot read ObjectId from " ++ show x
+
+data Handler = forall a b. (Marshal a, Marshal b) => Handler (a -> b -> IO ())
 
 {-
 Automatically generates Shared instances fomr arbitrary types of this form
@@ -131,7 +144,9 @@ property :: (Shared a, Marshal b) => String -> a -> Property (c :: Access) b
 property name obj = Property (getProp (sharedId obj) name) (setProp (sharedId obj) name)
 
 data Host = Host { toHostHandle   :: IORef Handle
-                 , fromHostHandle :: IORef Handle }
+                 , fromHostHandle :: IORef Handle
+                 , responseChan   :: Chan Response
+                 , eventHandlers  :: IORef (Map Int Handler) }
                  deriving Eq
 
 {-# NOINLINE host #-}
@@ -139,7 +154,9 @@ host :: Host
 host = unsafePerformIO $ do
     r1 <- newIORef $ error "Host not started"
     r2 <- newIORef $ error "Host not started"
-    return $ Host r1 r2
+    r3 <- newIORef Map.empty
+    ch1 <- newChan
+    return $ Host r1 r2 ch1 r3
 
 startHost :: IO ()
 startHost = do
@@ -150,14 +167,27 @@ startHost = do
     hSetBuffering outH LineBuffering
     writeIORef (toHostHandle host) inH
     writeIORef (fromHostHandle host) outH
+    void $ forkIO listen
+
+listen :: IO ()
+listen = do
+    fromHost <- readIORef (fromHostHandle host)
+    forever $ do
+        Right inc <- readIncomming <$> hGetLine fromHost
+        case inc of
+            EventMsg (TargetArgs evtId tgt arg)  -> do
+                handlers <- readIORef $ eventHandlers host
+                case Map.lookup evtId handlers of
+                    Just (Handler f) -> f (fromValue tgt) (fromValue arg)
+                    Nothing          -> return ()
+            Response resp -> writeChan respCh resp
+    where respCh  = responseChan host
 
 sendMessage :: Message -> IO Response
 sendMessage msg = do
     toHost <- readIORef (toHostHandle host)
-    fromHost <- readIORef (fromHostHandle host)
     hPutStr toHost (serialize msg ++ "\n")
-    Right resp <- readResponse <$> hGetLine fromHost
-    return resp
+    readChan $ responseChan host
 
 getProp :: Marshal a => Int -> String -> IO a
 getProp shId propName = do
@@ -169,15 +199,23 @@ setProp shId propName val = do
     _ <- sendMessage (Set shId propName (toValue val))
     return ()
 
-invoke :: Shared a => a -> String -> [Value] -> IO Response
-invoke obj methName args = sendMessage (Invoke (sharedId obj) methName (length args, args))
+invoke :: Shared a => String -> [Value] -> a -> IO Response
+invoke methName args obj = sendMessage (Invoke (sharedId obj) methName (length args, args))
 
-invokeMarshal :: (Shared a, Marshal b) => a -> String -> [Value] -> IO b
-invokeMarshal obj methName args = do
-    Value v <- invoke obj methName args
+invokeMarshal :: (Shared a, Marshal b) => String -> [Value] -> a -> IO b
+invokeMarshal methName args obj = do
+    Value v <- invoke methName args obj
     return $ fromValue v
 
-invokeVoid :: Shared a => a -> String -> [Value] -> IO ()
-invokeVoid obj methName args = do
-    NoResponse <- invoke obj methName args
+invokeVoid :: Shared a => String -> [Value] -> a -> IO ()
+invokeVoid methName args obj = do
+    NoResponse <- invoke methName args obj
     return ()
+
+event :: (Shared a, Marshal b, Marshal c) => String -> a -> IO (Event b c)
+event name x = do
+    Value (ObjectId i) <- sendMessage (GetEvent (sharedId x) name)
+    return $ Event i
+
+addHandler :: (Marshal a, Marshal b) => Event a b -> (a -> b -> IO ()) -> IO ()
+addHandler (Event evtId) h = modifyIORef (eventHandlers host) (Map.insert evtId (Handler h))

@@ -54,8 +54,6 @@ instance Marshal Color where
     fromValue (I.Color x) = Color x
     fromValue _ = error "Value not a Font"
 
---class Shared a => Control a
-
 {-
 Makes a new Shared type with the following template
 
