@@ -37,21 +37,22 @@ deserializeRead str = do
 readResponse :: String -> Either String Response
 readResponse = deserializeRead
 
-data Value = Int Int | String String | Color (Vec4 Int) | Point (Vec2 Int) | Size (Vec2 Int) | Font String Float | ObjectId Int
-    deriving (Eq, Ord, Show, Read)
+data Value = Int Int | String String | Color (Vec4 Int)
+           | Point (Vec2 Int) | Size (Vec2 Int) | Font String Float | ObjectId Int
+           deriving (Eq, Ord, Show, Read)
 data Message = New String | Set Int String Value | Get Int String | Invoke Int String (Int, [Value])
     deriving (Eq, Ord, Show, Read)
 data Response = NoResponse | Error String | Value Value
     deriving (Eq, Ord, Show, Read)
 
 instance Serialize (Int, [Value]) where
-    serialize (i, vs) = unwords $ [serialize i] ++ map serialize vs
+    serialize (i, vs) = unwords $ serialize i : map serialize vs
     deserialize rest0 = ((num, map fst res), finalRest)
         where (num, rest1) = deserialize rest0
-              res = unfoldr proc (rest1, num)
+              res = unfoldr alg (rest1, num)
               finalRest = snd $ last res
-              proc (_, 0) = Nothing
-              proc (r, n) = Just ((v, r'), (r', n - 1))
+              alg (_, 0) = Nothing
+              alg (r, n) = Just ((v, r'), (r', n - 1))
                   where (v, r') = deserialize r
 
 deriveSerialize WithHeader ''Value
@@ -65,6 +66,16 @@ class Serialize a => Marshal a where
 instance Marshal Value where
     toValue   = id
     fromValue = id
+
+instance Marshal String where
+    toValue = String
+    fromValue (String s) = s
+    fromValue _ = error "Value not a String"
+
+instance Marshal Int where
+    toValue = Int
+    fromValue (Int n) = n
+    fromValue _ = error "Value not an Int"
 
 data Share = Share { shareId :: Int } deriving (Show, Read, Eq, Ord)
 class Marshal a => Shared a where
@@ -160,3 +171,13 @@ setProp shId propName val = do
 
 invoke :: Shared a => a -> String -> [Value] -> IO Response
 invoke obj methName args = sendMessage (Invoke (sharedId obj) methName (length args, args))
+
+invokeMarshal :: (Shared a, Marshal b) => a -> String -> [Value] -> IO b
+invokeMarshal obj methName args = do
+    Value v <- invoke obj methName args
+    return $ fromValue v
+
+invokeVoid :: Shared a => a -> String -> [Value] -> IO ()
+invokeVoid obj methName args = do
+    NoResponse <- invoke obj methName args
+    return ()

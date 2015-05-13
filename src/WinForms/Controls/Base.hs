@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# OPTIONS_GHC -fno-warn-unused-binds #-}
+{-# OPTIONS_GHC -fno-warn-unused-binds -fno-warn-unused-imports #-}
 module WinForms.Controls.Base where
 
 import WinForms.Types
@@ -54,7 +54,7 @@ instance Marshal Color where
     fromValue (I.Color x) = Color x
     fromValue _ = error "Value not a Font"
 
-class Shared a => Control a
+--class Shared a => Control a
 
 {-
 Makes a new Shared type with the following template
@@ -94,16 +94,14 @@ makeShared str = do
 {-
 Adds these declarations for the type
 
-instance Control Name
 newName :: IO Name
 newName = I.newShared
 -}
-makeControl :: String -> Q [Dec]
-makeControl str = do
+makeInstantiable :: String -> Q [Dec]
+makeInstantiable str = do
     shared <- makeShared str
-    controlInst <- [d|instance Control $(conT name)|]
     def <- [d|$(varP $ newN) = newShared|]
-    return $ shared ++ controlInst ++ [sig] ++ def
+    return $ shared ++ [sig] ++ def
     where sig = SigD newN (AppT (ConT ''IO) (ConT name))
           newN = mkName $ "new" ++ str
           name = mkName str
