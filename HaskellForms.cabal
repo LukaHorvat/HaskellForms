@@ -60,7 +60,8 @@ executable HaskellForms
   build-depends:       base >=4.7 && <4.8,
                        template-haskell,
                        process == 1.2.*,
-                       containers == 0.5.*
+                       containers == 0.5.*,
+                       constraints == 0.4.*
 
   -- Directories containing source files.
   hs-source-dirs:      src

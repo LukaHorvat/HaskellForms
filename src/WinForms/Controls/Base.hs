@@ -1,11 +1,14 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, DefaultSignatures, MultiParamTypeClasses,
+             FlexibleInstances #-}
 {-# OPTIONS_GHC -fno-warn-unused-binds -fno-warn-unused-imports #-}
 module WinForms.Controls.Base where
 
 import WinForms.Types
 import WinForms.Serialization
 import Language.Haskell.TH
-import WinForms.Interface (Shared, Share(..), deriveSharedFromDec, newShared, Marshal, Value(ObjectId))
+import WinForms.Interface (Shared, Share(..), deriveSharedFromDec, Instantiable
+                          , newInstantiable, newShare, Marshal, Value(ObjectId)
+                          , unsafeCast)
 import qualified WinForms.Interface as I
 
 data Font = Font String Float
@@ -14,6 +17,8 @@ data Size = Size (Vec2 Int)
     deriving (Eq, Ord, Show, Read)
 data Point = Point (Vec2 Int)
     deriving (Eq, Ord, Show, Read)
+data PointF = PointF (Vec2 Float)
+    deriving (Eq, Ord, Show, Read)
 data Color = Color (Vec4 Int)
     deriving (Eq, Ord, Show, Read)
 
@@ -21,6 +26,7 @@ deriveSerialize WithHeader ''Font
 deriveSerialize WithHeader ''Point
 deriveSerialize WithHeader ''Size
 deriveSerialize WithHeader ''Color
+deriveSerialize WithHeader ''PointF
 
 color :: Int -> Int -> Int -> Int -> Color
 color r g b a = Color (Vec4 r g b a)
@@ -30,6 +36,9 @@ font = Font
 
 point :: Int -> Int -> Point
 point x y = Point (Vec2 x y)
+
+pointF :: Float -> Float -> PointF
+pointF x y = PointF (Vec2 x y)
 
 size :: Int -> Int -> Size
 size x y = Size (Vec2 x y)
@@ -49,10 +58,18 @@ instance Marshal Point where
     fromValue (I.Point x) = Point x
     fromValue _ = error "Value not a Point"
 
+instance Marshal PointF where
+    toValue (PointF x)     = I.PointF x
+    fromValue (I.PointF x) = PointF x
+    fromValue _ = error "Value not a PointF"
+
 instance Marshal Color where
     toValue (Color x)     = I.Color x
     fromValue (I.Color x) = Color x
     fromValue _ = error "Value not a Font"
+
+nullRef :: Share
+nullRef = Share (-1)
 
 {-
 Makes a new Shared type with the following template
@@ -61,11 +78,8 @@ newtype Name = Name Share deriving (Read, Show, Eq, Ord)
 instance Serialize Name where
     serialize (Name s) = serialize s
     deserialize ss = let (sh, rest) = deserialize ss in (Name sh, rest)
-instance Marshal Name where
-    toValue (Name (Share n)) = ObjectId n
-    fromValue (ObjectId n) = Name (Share n)
-    fromValue _ = error "Value not an ObjectId"
 deriveShared ''Name
+instance Marshal Name where
 -}
 makeShared :: String -> Q [Dec]
 makeShared str = do
@@ -76,13 +90,8 @@ makeShared str = do
             deserialize ss = ($(conE name) sh, rest)
                 where (sh, rest) = deserialize ss
         |]
-    marshal <- [d|
-        instance Marshal $(conT name) where
-            toValue $(conP name [conP 'Share [varP n]]) = ObjectId $(varE n)
-            fromValue (ObjectId i) = $(conE name) (Share i)
-            fromValue _ = error "Value not an ObjectId"
-        |]
-    return $ [typeDec] ++ serial ++ marshal ++ shared
+    marshal <- [d|instance Marshal $(conT name) where|]
+    return $ [typeDec] ++ serial ++ shared ++ marshal
     where name = mkName str
           typeDec = NewtypeD [] name [] (NormalC name [(NotStrict,ConT ''Share)])
                              [''Read, ''Show, ''Eq, ''Ord]
@@ -92,14 +101,32 @@ makeShared str = do
 {-
 Adds these declarations for the type
 
+instance Instantiable Name where
+    newInstantiable = fmap Name (newShare "Name")
+
 newName :: IO Name
-newName = I.newShared
+newName = newInstantiable
 -}
 makeInstantiable :: String -> Q [Dec]
 makeInstantiable str = do
     shared <- makeShared str
-    def <- [d|$(varP $ newN) = newShared|]
-    return $ shared ++ [sig] ++ def
+    inst   <- [d|
+        instance Instantiable $(conT name) where
+            newInstantiable = fmap $(conE name) (newShare $(litE $ stringL $ nameBase name))
+        |]
+    def <- [d|$(varP $ newN) = newInstantiable|]
+    return $ shared ++ inst ++ [sig] ++ def
     where sig = SigD newN (AppT (ConT ''IO) (ConT name))
           newN = mkName $ "new" ++ str
           name = mkName str
+
+{-
+Support for using instances of a subclass as instances of a superclass
+-}
+class Subclass a b where
+    cast :: b -> a
+    default cast :: (Shared a, Shared b) => b -> a
+    cast = unsafeCast
+
+instance Subclass a a where
+    cast = id

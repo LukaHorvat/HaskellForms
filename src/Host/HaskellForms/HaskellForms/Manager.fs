@@ -7,6 +7,7 @@ open System
 open System.Windows.Forms
 open System.Threading
 open Interface
+open System.Drawing
 
 let mutable uiForm = null
 let inUiThread (f : unit -> 'a) =
@@ -18,6 +19,7 @@ let runUiThread () =
         Application.EnableVisualStyles()
         uiForm <- new Form()
         uiForm.Handle |> ignore
+        Interface.closing.Publish |> Event.add (fun () -> Application.Exit())
         Application.Run() ) |> ignore
 
 let newControl msg =
@@ -37,35 +39,39 @@ let newControl msg =
 
 let invoke msg =
     match msg with
-    | Invoke(objId, meth, _, values) -> 
+    | Invoke(_, _, values) | InvokeStatic(_, _, values) ->
         eith {
-            let! obj = Table.getObject objId
             let! args = values 
-                        |> List.map( function
-                        | Unpacked o -> Right o
-                        | ObjectId i -> Table.getObject i
-                        | _          -> Left "This shouldn't happen (Manager.fs 1)" )
-                        |> Either.sequence
-            let! res = inUiThread (fun () -> obj |> Method.invoke meth (Array.ofList args))
-            return match res with
-                   | Some (Packed v) -> Value v
-                   | Some o          -> Table.getIdOrRegister o |> objectId
-                   | None            -> NoResponse
+                       |> List.map( function
+                       | Unpacked o    -> Right o
+                       | ObjectId i    -> Table.getObject i
+                       | _             -> Left "This shouldn't happen (Manager.fs 1)" )
+                       |> Either.sequence
+            match msg with
+            | Invoke(objId, meth, _) -> 
+                let! obj = Table.getObject objId
+                let! res = inUiThread (fun () -> obj |> Method.invoke meth (Array.ofList args))
+                return res |> Option.map Interface.pack |> Option.unpack NoResponse Value
+            | InvokeStatic(typeName, methName, _) ->
+                let! res = inUiThread (fun () -> Method.invokeStatic typeName methName (Array.ofList args))
+                return res |> Option.map Interface.pack |> Option.unpack NoResponse Value
+            | _ -> return! Left "This shouldn't happen (Manager.fs 2)"
         } |> Either.unpack Error id
     | _ -> Pass
 
 let getOrSet msg : Response =
     match msg with
     | Get(id, prop) ->
-        let prepare = function
-            | Packed v -> Value v
-            | o        -> Table.getIdOrRegister o |> objectId
-        Table.getObject id |> Either.bind (Property.named prop) |> Either.bind Property.get |> Either.unpack Error prepare
-    | Set(id, prop, Unpacked value) ->
+        Table.getObject id |> Either.bind (Property.named prop) |> Either.bind Property.get |> Either.unpack Error (Interface.pack >> Value)
+    | Set(id, prop, v) ->
         inUiThread( fun () ->
             eith {
+                let! o = match v with
+                         | Unpacked o -> Right o
+                         | ObjectId i -> Table.getObject i
+                         | _          -> Left "This shouldn't happen (Manager.fs 3)"
                 let! ctrl = Table.getObject id
-                return! ctrl |> Property.named prop |> Either.bind (Property.set value |> Thread.byControl ctrl) 
+                return! ctrl |> Property.named prop |> Either.bind (Property.set o |> Thread.byControl ctrl) 
             } |> Either.unpack Error (const' NoResponse) )
     | _ -> Pass
 

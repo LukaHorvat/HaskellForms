@@ -1,4 +1,5 @@
-{-# LANGUAGE TemplateHaskell, DataKinds, KindSignatures, FlexibleInstances, ExistentialQuantification #-}
+{-# LANGUAGE TemplateHaskell, DataKinds, KindSignatures, FlexibleInstances, ExistentialQuantification
+           , DefaultSignatures, ConstraintKinds, GADTs, MultiParamTypeClasses #-}
 module WinForms.Interface where
 
 import WinForms.Types
@@ -41,11 +42,11 @@ deserializeRead str = do
 readIncomming :: String -> Either String Incomming
 readIncomming = deserializeRead
 
-data Value = Int Int | String String | Color (Vec4 Int)
+data Value = Int Int | String String | Color (Vec4 Int) | Float Float | PointF (Vec2 Float)
            | Point (Vec2 Int) | Size (Vec2 Int) | Font String Float | ObjectId Int
            deriving (Eq, Ord, Show, Read)
 data Message = New String | Set Int String Value | Get Int String
-             | Invoke Int String (Int, [Value]) | GetEvent Int String
+             | Invoke Int String (Int, [Value]) | GetEvent Int String | InvokeStatic String String (Int, [Value])
     deriving (Eq, Ord, Show, Read)
 data Response = NoResponse | Error String | Value Value
     deriving (Eq, Ord, Show, Read)
@@ -73,6 +74,11 @@ deriveSerialize WithHeader ''Incomming
 class Serialize a => Marshal a where
     toValue   :: a -> Value
     fromValue :: Value -> a
+    default toValue :: Shared a => a -> Value
+    default fromValue :: Shared a => Value -> a
+    toValue = ObjectId . sharedId
+    fromValue (ObjectId i) = fromId i
+    fromValue _            = error "Value not an ObjectId"
 
 instance Marshal Value where
     toValue   = id
@@ -88,17 +94,30 @@ instance Marshal Int where
     fromValue (Int n) = n
     fromValue _ = error "Value not an Int"
 
+instance Marshal Float where
+    toValue = Float
+    fromValue (Float x) = x
+    fromValue _ = error "Value not a Float"
+
 data Share = Share { shareId :: Int } deriving (Show, Read, Eq, Ord)
+
 class Marshal a => Shared a where
-    newShared :: IO a
     sharedId  :: a -> Int
     fromId    :: Int -> a
+
+instance Shared Share where
+    sharedId = shareId
+    fromId   = Share
+instance Marshal Share where
+
+class Shared a => Instantiable a where
+    newInstantiable :: IO a
 
 instance Serialize Share where
     serialize (Share i) = "ObjectId" ++ show i
     deserialize ("ObjectId" : ss) = (Share i, rest)
         where (i, rest) = deserialize ss
-    deserialize x        = error $ "Cannot read ObjectId from " ++ show x
+    deserialize x       = error $ "Cannot read ObjectId from " ++ show x
 
 data Handler = forall a b. (Marshal a, Marshal b) => Handler (a -> b -> IO ())
 
@@ -110,8 +129,7 @@ newtype Type = Type Share
 with this template
 
 instance Shared Type where
-    newShared = fmap Type (I.newShare "Type")
-    sharedId (Type s) = I.shareId s
+    sharedId (Type s) = shareId s
     fromId n = Type (Share n)
 -}
 deriveShared :: Name -> Q [Dec]
@@ -120,14 +138,9 @@ deriveShared typeName = do
     deriveSharedFromDec dec
 
 deriveSharedFromDec :: Dec -> Q [Dec]
-deriveSharedFromDec dec = return [InstanceD [] hed [makeNew, makeSharedId, makeFromId]]
+deriveSharedFromDec dec = return [InstanceD [] hed [makeSharedId, makeFromId]]
     where (NewtypeD _ name _ (NormalC ctor _) _) = dec
           hed = AppT (ConT ''Shared) (ConT name)
-          makeFmap =
-              NormalB (AppE
-                  (AppE (VarE 'fmap) (ConE ctor))
-                  (AppE (VarE 'newShare) (LitE (StringL (nameBase ctor)))))
-          makeNew = FunD 'newShared [Clause [] makeFmap []]
           makeIdPat = ConP ctor [VarP $ mkName "s"]
           makeIdBody = NormalB (AppE (VarE 'shareId) (VarE $ mkName "s"))
           makeSharedId = FunD 'sharedId [Clause [makeIdPat] makeIdBody []]
@@ -140,10 +153,12 @@ newShare name = do
     Value (ObjectId i) <- sendMessage (New name)
     return $ Share i
 
-property :: (Shared a, Marshal b) => String -> a -> Property (c :: Access) b
-property name obj = Property (getProp (sharedId obj) name) (setProp (sharedId obj) name)
+property :: (Shared a, Marshal b) => String -> a -> Property b
+property name obj = Property (getProp (sharedId obj) name)
+                             (setProp (sharedId obj) name)
 
-data Host = Host { toHostHandle   :: IORef Handle
+data Host = Host { procHandle     :: IORef (Maybe ProcessHandle)
+                 , toHostHandle   :: IORef Handle
                  , fromHostHandle :: IORef Handle
                  , responseChan   :: Chan Response
                  , eventHandlers  :: IORef (Map Int Handler) }
@@ -152,28 +167,39 @@ data Host = Host { toHostHandle   :: IORef Handle
 {-# NOINLINE host #-}
 host :: Host
 host = unsafePerformIO $ do
+    r0 <- newIORef Nothing
     r1 <- newIORef $ error "Host not started"
     r2 <- newIORef $ error "Host not started"
     r3 <- newIORef Map.empty
     ch1 <- newChan
-    return $ Host r1 r2 ch1 r3
+    return $ Host r0 r1 r2 ch1 r3
 
 startHost :: Bool -> IO ()
 startHost debug = do
-    (Just inH, Just outH, _, _) <- createProcess (proc "C:/Users/Luka/Documents/Haskell/HaskellForms/src/Host/HaskellForms/HaskellForms/bin/Debug/HaskellForms.exe" [])
-                                   { std_out = CreatePipe
-                                   , std_in  = CreatePipe }
+    mbHandle <- readIORef $ procHandle host
+    case mbHandle of
+        Just p -> do
+            ec <- getProcessExitCode p
+            case ec of
+                Nothing -> terminateProcess p
+                _       -> return ()
+        Nothing -> return ()
+    (Just inH, Just outH, _, hnd) <- createProcess (proc "C:/Users/Luka/Documents/Haskell/HaskellForms/src/Host/HaskellForms/HaskellForms/bin/Debug/HaskellForms.exe" [])
+                                     { std_out = CreatePipe
+                                     , std_in  = CreatePipe }
     hSetBuffering inH LineBuffering
     hSetBuffering outH LineBuffering
     writeIORef (toHostHandle host) inH
     writeIORef (fromHostHandle host) outH
+    writeIORef (procHandle host) $ Just hnd
     void $ forkIO $ listen debug
 
 listen :: Bool -> IO ()
 listen debug = do
     fromHost <- readIORef (fromHostHandle host)
     forever $ do
-        Right inc <- readIncomming <$> hGetLine fromHost
+        line <- hGetLine fromHost
+        let Right inc = readIncomming line
         when debug $ print inc
         case inc of
             EventMsg (TargetArgs evtId tgt arg)  -> do
@@ -187,8 +213,12 @@ listen debug = do
 sendMessage :: Message -> IO Response
 sendMessage msg = do
     toHost <- readIORef (toHostHandle host)
+    --putStrLn $ serialize ms
     hPutStr toHost (serialize msg ++ "\n")
-    readChan $ responseChan host
+    resp <- readChan $ responseChan host
+    case resp of
+        Error err -> error err
+        x         -> return x
 
 getProp :: Marshal a => Int -> String -> IO a
 getProp shId propName = do
@@ -197,7 +227,7 @@ getProp shId propName = do
 
 setProp :: Marshal a => Int -> String -> a -> IO ()
 setProp shId propName val = do
-    _ <- sendMessage (Set shId propName (toValue val))
+    _ <- sendMessage $ Set shId propName $ toValue val
     return ()
 
 invoke :: Shared a => String -> [Value] -> a -> IO Response
@@ -213,6 +243,19 @@ invokeVoid methName args obj = do
     NoResponse <- invoke methName args obj
     return ()
 
+invokeStatic :: String -> String -> [Value] -> IO Response
+invokeStatic typeName methName args = sendMessage (InvokeStatic typeName methName (length args, args))
+
+invokeStaticMarshal :: Marshal a => String -> String -> [Value] -> IO a
+invokeStaticMarshal typeName methName args = do
+    Value v <- invokeStatic typeName methName args
+    return $ fromValue v
+
+invokeStaticVoid :: String -> String -> [Value] -> IO ()
+invokeStaticVoid typeName methName args = do
+    NoResponse <- invokeStatic typeName methName args
+    return ()
+
 event :: (Shared a, Marshal b, Marshal c) => String -> a -> IO (Event b c)
 event name x = do
     Value (ObjectId i) <- sendMessage (GetEvent (sharedId x) name)
@@ -220,3 +263,6 @@ event name x = do
 
 addHandler :: (Marshal a, Marshal b) => Event a b -> (a -> b -> IO ()) -> IO ()
 addHandler (Event evtId) h = modifyIORef (eventHandlers host) (Map.insert evtId (Handler h))
+
+unsafeCast :: (Shared a, Shared b) => a -> b
+unsafeCast = fromId . sharedId

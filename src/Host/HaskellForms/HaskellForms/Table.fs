@@ -19,7 +19,8 @@ let registerObject obj =
     step()
 
 let getObject id : Either<string, 'a> =
-    if objects.ContainsKey id then
+    if id = -1 then Right null
+    else if objects.ContainsKey id then
         match objects.[id] with
         | :? 'a as a -> Right a
         | _          -> sprintf "The object with id %d isn't of the expected type %A" id typeof<'a> |> Left

@@ -24,6 +24,10 @@ module Option =
         match opt with
         | None   -> a
         | Some b -> b
+    let unpack def f o =
+        match o with
+        | Some a -> f a
+        | None   -> def
 
 type OptionBuilder() =
     member x.Bind(v,f) = Option.bind f v

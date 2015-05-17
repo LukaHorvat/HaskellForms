@@ -6,9 +6,11 @@ open Microsoft.FSharp.Reflection
 open System.Text
 open System.Drawing
 open System.Text.RegularExpressions
+open System.Windows.Forms
+open System.Globalization
 
-type Value = Int of int | String of string | Color of Color | Point of Point | Size of Size | Font of Font | ObjectId of int
-type Message = New of string | Set of int * string * Value | Get of int * string | Invoke of int * string * int * (Value list) | GetEvent of int * string
+type Value = Int of int | String of string | Color of Color | Point of Point | Size of Size | Font of Font | ObjectId of int | Float of float | PointF of PointF
+type Message = New of string | Set of int * string * Value | Get of int * string | Invoke of int * string * (Value list) | GetEvent of int * string | InvokeStatic of string * string * (Value list)
 type Response = Pass | NoResponse | Error of string | Value of Value
 type EventMsg = TargetArgs of int * Value * Value
 type Outgoing = EventMsg of EventMsg | Response of Response
@@ -22,11 +24,15 @@ let private valueTypes =
     |> Seq.map (fun case -> case, case.GetFields() |> Array.head) 
     |> Seq.map (fun (case, prop) -> prop.PropertyType, fun x -> FSharpValue.MakeUnion(case, [| x |])) 
     |> Seq.toList
-let (|Packed|_|) (o : obj) = List.tryFind (fst >> (=) (o.GetType())) valueTypes |> Option.map (fun (_, cons) -> cons o :?> Value)
+let (|Packed|_|) (o : obj) =
+    match o with
+    | null -> None
+    | _    -> List.tryFind (fst >> (=) (o.GetType())) valueTypes |> Option.map (fun (_, cons) -> cons o :?> Value)
 
 let pack (o : obj) =
     match o with
     | Packed v -> v
+    | null     -> ObjectId (-1)
     | o        -> Table.getIdOrRegister o |> ObjectId
 
 let objectId n = ObjectId n |> Value
@@ -78,12 +84,13 @@ type Reader(str : string) =
         | _ -> Left "Cannot read past the end of string"
     member x.EndOfString () = words = []
     member x.ReadInt () = readWith Int32.Parse "int"
-    member x.ReadFloat () = readWith Single.Parse "float"
+    member x.ReadFloat () = readWith (fun str -> Single.Parse(str, CultureInfo.InvariantCulture)) "float"
     member x.ReadWord () = readWith id "string"
     member x.ReadByte () = readWith (fun s -> s.Chars 0 |> byte) "byte"
-    
+
 let private size x y = Drawing.Size(x, y)
 let private point x y = Drawing.Point(x, y)
+let private pointF x y = Drawing.PointF(x, y)
 let private color r g b a = Drawing.Color.FromArgb(a, r, g, b)
 let private font (name : string) size = new Drawing.Font(name, size)
 
@@ -95,6 +102,7 @@ let rec private read (reader : Reader) (t : Type) : Either<string, obj> =
     else if typeof<string> = t then reader.ReadWord() |> Either.cast
     else if typeof<Size>   = t then Either.lift2 size (ri()) (ri()) |> Either.cast
     else if typeof<Point>  = t then Either.lift2 point (ri()) (ri()) |> Either.cast
+    else if typeof<PointF> = t then Either.lift2 pointF (reader.ReadFloat()) (reader.ReadFloat()) |> Either.cast
     else if typeof<Color>  = t then Either.lift4 color (ri()) (ri()) (ri()) (ri()) |> Either.cast
     else if typeof<Font>   = t then Either.lift2 font (reader.ReadWord()) (reader.ReadFloat()) |> Either.cast
     else if FSharpType.IsUnion(t) then readUnion reader t
@@ -105,30 +113,41 @@ and private readUnion (reader : Reader) (t : Type) = eith {
     if t = typeof<Message> && caseName = "Invoke" then
         let! objId = reader.ReadInt()
         let! metName = reader.ReadWord()
-        let! numArgs = reader.ReadInt()
-        let! argList = [1..numArgs] |> List.map (fun _ -> read reader typeof<Value> |> Either.cast) |> Either.sequence
-        return Invoke(objId, metName, numArgs, argList) :> obj
+        let! argList = readArgs reader
+        return Invoke(objId, metName, argList) :> obj
+    else if t = typeof<Message> && caseName = "InvokeStatic" then
+        let! typeName = reader.ReadWord()
+        let! metName  = reader.ReadWord()
+        let! argList  = readArgs reader
+        return InvokeStatic(typeName, metName, argList) :> obj
     else
         let cases = FSharpType.GetUnionCases(t)
         let! case = cases |> Seq.tryFind (fun case -> case.Name = caseName) |> Either.ofOption (sprintf "Case name %s not found on type %A" caseName t)
         let! args = case.GetFields() |> Array.map (fun prop -> read reader prop.PropertyType) |> Either.sequence
         return FSharpValue.MakeUnion(case, args |> Seq.toArray)
-}
+    }
+and private readArgs (reader : Reader) = eith {
+    let! numArgs = reader.ReadInt()
+    return! [1..numArgs] |> List.map (fun _ -> read reader typeof<Value> |> Either.cast) |> Either.sequence
+    }
 
 let private readMessage str : Either<string, Message> = read (Reader str) typeof<Message> |> Either.cast
 
 let rec private write (builder : StringBuilder) x =
     match box x with
-    | :? int | :? float | :? byte -> builder.Append(x.ToString() + " ")             |> ignore
-    | :? string as st -> builder.Append(sprintf "\"%s\"" st)                        |> ignore
-    | :? Point  as pt -> builder.Append(sprintf "%d %d " pt.X pt.Y)                 |> ignore
-    | :? Size   as sz -> builder.Append(sprintf "%d %d " sz.Width sz.Height)        |> ignore
-    | :? Color  as cl -> builder.Append(sprintf "%d %d %d %d " cl.R cl.G cl.B cl.A) |> ignore
-    | :? Font   as ft -> builder.Append(sprintf "\"%s\" %f " ft.Name ft.Size)       |> ignore
+    | :? float   as fl -> builder.Append(fl.ToString(CultureInfo.InvariantCulture))  |> ignore
+    | :? int | :? byte -> builder.Append(x.ToString() + " ")                         |> ignore
+    | :? string  as st -> builder.Append(sprintf "\"%s\"" st)                        |> ignore
+    | :? Point   as pt -> builder.Append(sprintf "%d %d " pt.X pt.Y)                 |> ignore
+    | :? PointF  as pt -> builder.Append(sprintf "%f %f " pt.X pt.Y)                 |> ignore
+    | :? Size    as sz -> builder.Append(sprintf "%d %d " sz.Width sz.Height)        |> ignore
+    | :? Color   as cl -> builder.Append(sprintf "%d %d %d %d " cl.R cl.G cl.B cl.A) |> ignore
+    | :? Font    as ft -> builder.Append(sprintf "\"%s\" %f " ft.Name ft.Size)       |> ignore
     | _ when FSharpType.IsUnion(x.GetType()) -> 
         let (caseInfo, args) = FSharpValue.GetUnionFields(x, x.GetType())
         builder.Append(caseInfo.Name + " ") |> ignore
         args |> Seq.iter (fun arg -> write builder arg)
+    | _ -> failwith "Unrecognized type (Interface.fs)"
 
 let private handlers = List<Message -> Response>()
 let addMessageHandler handler = handlers.Add handler
@@ -155,10 +174,15 @@ let rec private checkInput () =
     let line = Console.ReadLine()
     if line <> null then 
         readMessage line |> onMessage
-        checkInput()
+        true
+    else
+        false
+
+let closing = Event<_>()
 
 let startListening () =
-    while true do checkInput ()
+    while checkInput () do () 
+    closing.Trigger()
 
 let fireEvent evtId evtTgt evtArgs =
     let tgt = pack evtTgt
