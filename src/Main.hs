@@ -13,3 +13,4 @@ main = do
     controls form >>= add btn
     text btn #= "Test"
     test <- text btn
+    return ()

@@ -184,7 +184,7 @@ startHost debug = do
                 Nothing -> terminateProcess p
                 _       -> return ()
         Nothing -> return ()
-    (Just inH, Just outH, _, hnd) <- createProcess (proc "C:/Users/Luka/Documents/Haskell/HaskellForms/src/Host/HaskellForms/HaskellForms/bin/Debug/HaskellForms.exe" [])
+    (Just inH, Just outH, _, hnd) <- createProcess (proc "./src/Host/HaskellForms/HaskellForms/bin/Debug/HaskellForms.exe" [])
                                      { std_out = CreatePipe
                                      , std_in  = CreatePipe }
     hSetBuffering inH LineBuffering
