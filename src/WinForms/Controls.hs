@@ -50,6 +50,9 @@ class Shared a => ControlC a where
     refresh :: a -> IO ()
     refresh = invokeVoid "Refresh" []
 
+    text :: FromGettableSettable p => a -> p String
+    text = getSet . property "Text"
+
 instance ControlC a => Subclass Control a
 instance ControlC Form
 instance ControlC Button

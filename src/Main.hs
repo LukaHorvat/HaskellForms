@@ -9,10 +9,7 @@ import WinForms.Controls.Base
 main :: IO ()
 main = do
     form <- newForm
-    pb   <- newPictureBox
-    controls form >>= add pb
-    bmp  <- newBitmap 500 500
-    image pb #= bmp
-    red  <- newSolidBrush $ color 255 0 0 255
-    graphicsFromImage bmp >>= drawString "Hello world" (font "Consolas" 12) red (pointF 0 0)
-    refresh form
+    btn  <- newButton
+    controls form >>= add btn
+    text btn #= "Test"
+    test <- text btn
