@@ -9,8 +9,11 @@ import WinForms.Controls.Base
 (#=) :: (Marshal a, Subclass a b) => Setter a -> b -> IO ()
 (Setter setter) #= val = setter $ cast val
 
-handle :: (Marshal a, Marshal b) => (a -> b -> IO ()) -> Event a b -> IO ()
-handle = flip addHandler
+handle :: (Marshal a, Marshal b) => (b -> IO ()) -> Event a b -> IO ()
+handle f = handleWithTarget (\_ b -> f b)
+
+handleWithTarget :: (Marshal a, Marshal b) => (a -> b -> IO ()) -> Event a b -> IO ()
+handleWithTarget = flip addHandler
 
 makeShared "EventArgs"
 makeShared "ControlCollection"
